@@ -63,7 +63,7 @@ public sealed class AggregateTranslator : ITranslator, IDisposable
         TranslatorGuards.NotNull(yandexTranslator);
         TranslatorGuards.NotNull(bingTranslator);
 
-        _translators = new ITranslator[] { googleTranslator, googleTranslator2, microsoftTranslator, yandexTranslator, bingTranslator };
+        _translators = new ITranslator[] { microsoftTranslator, yandexTranslator,bingTranslator, googleTranslator, googleTranslator2};
     }
 
     /// <summary>

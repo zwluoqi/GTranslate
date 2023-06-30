@@ -3,10 +3,14 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
 using System.Text;
-using System.Text.Json;
+using System.Text.Json.Serialization;
+//using System.Text.Json;
 using System.Threading.Tasks;
 using GTranslate;
 using GTranslate.Translators;
+using Newtonsoft;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace LanguageScraper;
 
@@ -87,19 +91,22 @@ public class GoogleLanguageScraper : ILanguageScraper
 
     private static IReadOnlyList<ILanguage> GetTtsLanguages(byte[] htmlBytes)
     {
-        return GetLanguageData(htmlBytes, TtsLanguagesId)
-            .RootElement[0]
-            .EnumerateArray()
+        var json = System.Text.Encoding.Default.GetString(htmlBytes);
+
+        var languageData = JArray.Parse(json);
+        var languages = languageData[0]
+            .Children<JArray>()
             .Select(x => new ScrapedLanguage("?", x[0].ToString(), "?", "?"))
-            .ToArray();
+            .ToList();
+
+        return languages;
     }
 
     private async Task<IReadOnlyList<ILanguage>> GetLanguagesAsync(byte[] htmlBytes)
     {
         // Get language list (ISO code and English name)
-        var dict = GetLanguageData(htmlBytes, LanguagesId)
-            .RootElement[1]
-            .Deserialize<string[][]>()!
+        var dict = GetLanguageData(htmlBytes, LanguagesId)[1]
+            .ToObject<string[][]>()!
             .ToDictionary(x => x[0], x => x[1]);
 
         // Get native names
@@ -116,8 +123,7 @@ public class GoogleLanguageScraper : ILanguageScraper
         int start = bytes.AsSpan().IndexOf(NativeNamesStart) + NativeNamesStart.Length;
         int end = bytes.AsSpan().IndexOf(NativeNamesEnd);
 
-        var nativeNames = JsonDocument.Parse(bytes.AsMemory(start..end))
-            .Deserialize<Dictionary<string, string>>()!;
+        var nativeNames = Newtonsoft.Json.JsonConvert.DeserializeObject<Dictionary<string, string>>(System.Text.UTF8Encoding.UTF8.GetString(bytes.AsMemory(start..end).ToArray()));
 
         return dict.Select(x => new ScrapedLanguage(
                 Name: x.Value,
@@ -127,7 +133,7 @@ public class GoogleLanguageScraper : ILanguageScraper
             .ToArray();
     }
 
-    private static JsonDocument GetLanguageData(byte[] bytes, ReadOnlySpan<byte> id)
+    private static JArray GetLanguageData(byte[] bytes, ReadOnlySpan<byte> id)
     {
         int idIndex = bytes.AsSpan().IndexOf(id);
         byte[] callbackStart = Encoding.UTF8.GetBytes($"AF_initDataCallback({{key: 'ds:{bytes[idIndex - 10] - '0'}'");
@@ -137,6 +143,7 @@ public class GoogleLanguageScraper : ILanguageScraper
         int start = bytes.AsSpan(callbackIndex).IndexOf(LanguagesStart) + LanguagesStart.Length;
         int length = bytes.AsSpan(start + callbackIndex).IndexOf(LanguagesEnd);
 
-        return JsonDocument.Parse(bytes.AsMemory(start + callbackIndex, length));
+        return JArray.Parse(Encoding.UTF8.GetString(bytes.AsMemory(start + callbackIndex, length).ToArray()));
     }
+
 }

@@ -2,9 +2,10 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Net.Http;
 using System.Runtime.CompilerServices;
-using System.Text.Json;
+//using System.Text.Json;
 using GTranslate.Extensions;
 using GTranslate.Translators;
+using Newtonsoft.Json.Linq;
 
 namespace GTranslate;
 
@@ -87,18 +88,22 @@ internal static class TranslatorGuards
         }
     }
 
-    public static void ThrowIfStatusCodeIsPresent(JsonElement element)
+    public static void ThrowIfStatusCodeIsPresent(JObject element)
     {
         // If we get a "statusCode" property, this means the response is not successful
-        if (element.TryGetInt32("statusCode"u8, out int code))
+        if (element.TryGetValue("statusCode", out JToken codeToken) && codeToken.Type == JTokenType.Integer)
         {
-            string errorMessage = element.GetPropertyOrDefault("errorMessage"u8).GetStringOrDefault($"The API returned status code {code}.");
+            int code = (int)codeToken;
+            string errorMessage = element.TryGetValue("errorMessage", out JToken errorMessageToken)
+                ? errorMessageToken.ToString()
+                : $"The API returned status code {code}.";
 
 #if NET5_0_OR_GREATER
-            throw new HttpRequestException(errorMessage, null, (System.Net.HttpStatusCode)code);
+        throw new HttpRequestException(errorMessage, null, (System.Net.HttpStatusCode)code);
 #else
             throw new HttpRequestException(errorMessage);
 #endif
         }
     }
+
 }

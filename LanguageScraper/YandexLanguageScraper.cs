@@ -3,9 +3,10 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
 using System.Text;
-using System.Text.Json;
+//using System.Text.Json;
 using System.Threading.Tasks;
 using GTranslate;
+using Newtonsoft.Json.Linq;
 
 namespace LanguageScraper;
 
@@ -33,12 +34,12 @@ public class YandexLanguageScraper : ILanguageScraper
         int start = bytes.AsSpan().IndexOf(TranslatorLangsStart) + TranslatorLangsStart.Length;
         int length = bytes.AsSpan(start..).IndexOf(TranslatorLangsEnd);
 
-        var languages = JsonDocument.Parse(bytes.AsMemory(start, length))
-            .RootElement
-            .EnumerateObject()
-            .Select(x => new ScrapedLanguage(x.Value.GetString()!, x.Name, "?", "?"))
+        var languages = JObject.Parse(System.Text.UTF8Encoding.UTF8.GetString(bytes.AsMemory(start, length).ToArray()))
+            .Properties()
+            .Select(x => new ScrapedLanguage(x.Value.ToString()!, x.Name, "?", "?"))
             .ToArray();
 
         return new LanguageData { Languages = languages, TtsLanguages = Array.Empty<ILanguage>() };
     }
+
 }

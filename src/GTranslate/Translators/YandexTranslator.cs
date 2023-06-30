@@ -5,10 +5,12 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Text;
-using System.Text.Json;
+//using System.Text.Json;
 using System.Threading.Tasks;
 using GTranslate.Extensions;
 using GTranslate.Results;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace GTranslate.Translators;
 
@@ -108,26 +110,26 @@ public sealed class YandexTranslator : ITranslator, IDisposable
 
         using var content = new FormUrlEncodedContent(data);
         using var response = await _httpClient.PostAsync(new Uri($"{_apiUrl}/translate{query}"), content).ConfigureAwait(false);
-        using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+        var contentstream = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+        var root = JObject.Parse(contentstream);
 
-        using var document = await JsonDocument.ParseAsync(stream).ConfigureAwait(false);
+        ThrowIfStatusCodeIsPresent(root);
 
-        ThrowIfStatusCodeIsPresent(document.RootElement);
-
-        var textProp = document.RootElement.GetProperty("text"u8);
-        if (textProp.ValueKind != JsonValueKind.Array)
+        var textProp = root["text"];
+        if (textProp == null || textProp.Type != JTokenType.Array)
         {
             throw new TranslatorException("Failed to get the translated text.", Name);
         }
 
-        string translation = string.Concat(textProp.EnumerateArray().Select(x => x.GetString()));
+        string translation = string.Concat(textProp.Children().Select(x => x.ToString()));
 
-        string language = document.RootElement.GetProperty("lang"u8).GetString() ?? throw new TranslatorException("Failed to get the source language.", Name);
+        string language = root["lang"]?.ToString() ?? throw new TranslatorException("Failed to get the source language.", Name);
         int index = language.IndexOf('-');
         if (index == -1)
         {
             throw new TranslatorException("Failed to get the source language.", Name);
         }
+
 
         string source = ReversePatch(language[..index]);
         string target = ReversePatch(language[++index..]);
@@ -190,7 +192,8 @@ public sealed class YandexTranslator : ITranslator, IDisposable
         var target = Language.GetLanguage(toLanguage.ISO6391);
         var source = Language.GetLanguage(fromLanguage.ISO6391);
 
-        return new YandexTransliterationResult(JsonSerializer.Deserialize(bytes, StringContext.Default.String)!, text, target, source);
+        var s = System.Text.UTF8Encoding.UTF8.GetString(bytes);
+        return new YandexTransliterationResult(s!, text, target, source);
     }
 
     /// <summary>
@@ -225,17 +228,17 @@ public sealed class YandexTranslator : ITranslator, IDisposable
         };
 
         using var response = await _httpClient.SendAsync(request).ConfigureAwait(false);
-        var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+        var contentsteaeam = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+        var root = JObject.Parse(contentsteaeam);
 
-        using var document = await JsonDocument.ParseAsync(stream).ConfigureAwait(false);
+        ThrowIfStatusCodeIsPresent(root);
 
-        ThrowIfStatusCodeIsPresent(document.RootElement);
-
-        string? language = document.RootElement.GetProperty("lang"u8).GetString();
+        string? language = root["lang"]?.ToString();
         if (language is null || !Language.TryGetLanguage(language, out var lang))
         {
             throw new TranslatorException("Failed to get the detected language.", Name);
         }
+
 
         return lang;
     }
@@ -366,19 +369,20 @@ public sealed class YandexTranslator : ITranslator, IDisposable
         };
     }
 
-    private static void ThrowIfStatusCodeIsPresent(JsonElement element)
+    private static void ThrowIfStatusCodeIsPresent(JObject element)
     {
-        if (element.TryGetInt32("code"u8, out int code) && code != 200)
+        if (element.TryGetValue("code", out JToken codeToken) && codeToken.ToObject<int>() != 200)
         {
-            string message = element.GetPropertyOrDefault("message"u8).GetStringOrDefault($"The API returned status code {code}.");
+            string message = element["message"]?.ToString() ?? $"The API returned status code {codeToken}.";
 
 #if NET5_0_OR_GREATER
-            throw new HttpRequestException(message, null, (HttpStatusCode)code);
+        throw new HttpRequestException(message, null, (HttpStatusCode)codeToken.ToObject<int>());
 #else
             throw new HttpRequestException(message);
 #endif
         }
     }
+
 
     private static void EnsureValidTTSLanguage(ILanguage language)
     {

@@ -8,15 +8,69 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Encodings.Web;
-using System.Text.Json;
-using System.Text.Unicode;
+//using System.Text.Encodings.Web;
+//using System.Text.Json;
+//using System.Text.Unicode;
 using System.Threading;
 using System.Threading.Tasks;
 using GTranslate.Extensions;
 using GTranslate.Results;
+using Newtonsoft.Json.Linq;
+using Newtonsoft.Json;
 
 namespace GTranslate.Translators;
+
+public class HtmlEncoder
+{
+    private static Dictionary<char, string> _htmlEntities = new Dictionary<char, string>()
+    {
+        { '<', "&lt;" },
+        { '>', "&gt;" },
+        { '&', "&amp;" },
+        { '\"', "&quot;" },
+        { '\'', "&#39;" }
+        // Add more HTML entities as needed
+    };
+
+    public string Encode(string input)
+    {
+        StringBuilder encodedString = new StringBuilder();
+
+        foreach (char c in input)
+        {
+            if (_htmlEntities.ContainsKey(c))
+                encodedString.Append(_htmlEntities[c]);
+            else
+                encodedString.Append(c);
+        }
+
+        return encodedString.ToString();
+    }
+
+    //public static HtmlEncoder Create(UnicodeRange ranges)
+    //{
+    //    StringBuilder encodedString = new StringBuilder();
+
+    //    for(int i= 0; i < ranges.Length; i++)
+    //    {
+    //        char c = (char)(ranges.FirstCodePoint+i);
+    //        if (_htmlEntities.ContainsKey(c))
+    //            encodedString.Append(_htmlEntities[c]);
+    //        else
+    //            encodedString.Append(c);
+    //    }
+    //    //foreach (char c in input)
+    //    //{
+    //    //    if (_htmlEntities.ContainsKey(c))
+    //    //        encodedString.Append(_htmlEntities[c]);
+    //    //    else
+    //    //        encodedString.Append(c);
+    //    //}
+
+    //    return encodedString.ToString();
+    //}
+}
+
 
 /// <summary>
 /// Represents the Microsoft Azure translator.
@@ -33,7 +87,7 @@ public sealed class MicrosoftTranslator : ITranslator, IDisposable
 
     private static readonly Uri _detectUri = new($"https://{_detectUrl}");
     private static readonly Uri _speechTokenUri = new($"https://{_speechTokenUrl}");
-    internal static readonly HtmlEncoder _ssmlEncoder = HtmlEncoder.Create(UnicodeRanges.All); // Like the default encoder but only encodes required characters
+    internal static readonly HtmlEncoder _ssmlEncoder = new HtmlEncoder(); // Like the default encoder but only encodes required characters
 
     // From Microsoft Translator Android app
     private static readonly byte[] _privateKey =
@@ -218,25 +272,27 @@ public sealed class MicrosoftTranslator : ITranslator, IDisposable
         };
 
         request.Headers.Add("X-MT-Signature", GetSignature(url));
-        request.Content = new StringContent($"[{{\"Text\":\"{text.AsSpan().SafeJsonTextEncode()}\"}}]", Encoding.UTF8, "application/json");
+        string encodedText = JsonConvert.ToString(text);
+        var json = $"[{{\"Text\":{encodedText}}}]";
+        request.Content = new StringContent(json, Encoding.UTF8, "application/json");
 
         using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
 
-        using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
-        using var document = await JsonDocument.ParseAsync(stream).ConfigureAwait(false);
+        var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+        var root = JArray.Parse(content)[0];
 
-        var root = document.RootElement[0];
+        var detectedLanguage = root["detectedLanguage"];
+        string sourceLanguage = detectedLanguage?["language"]?.ToString()
+                                 ?? fromLanguage?.ISO6391
+                                 ?? throw new TranslatorException("Failed to get the source language.", Name);
 
-        var detectedLanguage = root.GetPropertyOrDefault("detectedLanguage"u8);
-        string sourceLanguage = detectedLanguage
-            .GetPropertyOrDefault("language"u8)
-            .GetStringOrDefault(fromLanguage?.ISO6391) ?? throw new TranslatorException("Failed to get the source language.", Name);
+        string targetLanguage = root["translations"]?[0]?["to"]?.ToString() ?? toLanguage.ISO6391;
 
-        string targetLanguage = root.GetProperty("translations"u8)[0].GetProperty("to"u8).GetString() ?? toLanguage.ISO6391;
+        float? score = detectedLanguage?["score"]?.ToObject<float>();
+        string translation = root["translations"]?[0]?["text"]?.ToString()
+                             ?? throw new TranslatorException("Failed to get the translation.", Name);
 
-        float? score = detectedLanguage.TryGetSingle("score"u8, out float temp) ? temp : null;
-        string translation = root.GetProperty("translations"u8)[0].GetProperty("text"u8).GetString() ?? throw new TranslatorException("Failed to get the translation.", Name);
 
         return new MicrosoftTranslationResult(translation, text, Language.GetLanguage(targetLanguage), Language.GetLanguage(sourceLanguage), score);
     }
@@ -284,17 +340,19 @@ public sealed class MicrosoftTranslator : ITranslator, IDisposable
         };
 
         request.Headers.Add("X-MT-Signature", GetSignature(url));
-        request.Content = new StringContent($"[{{\"Text\":\"{text.AsSpan().SafeJsonTextEncode()}\"}}]", Encoding.UTF8, "application/json");
+        string encodedText = JsonConvert.ToString(text);
+        var json = $"[{{\"Text\":{encodedText}}}]";
+        request.Content = new StringContent(json, Encoding.UTF8, "application/json");
 
         using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
 
-        using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
-        using var document = await JsonDocument.ParseAsync(stream).ConfigureAwait(false);
+        var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+        var root = JArray.Parse(content)[0];
 
-        var root = document.RootElement[0];
-        string transliteration = root.GetProperty("text"u8).GetString() ?? throw new TranslatorException("Failed to get the transliteration.", Name);
-        string script = root.GetProperty("script"u8).GetString() ?? throw new TranslatorException("Failed to get the output script", Name);
+        string transliteration = root["text"]?.ToString() ?? throw new TranslatorException("Failed to get the transliteration.", Name);
+        string script = root["script"]?.ToString() ?? throw new TranslatorException("Failed to get the output script", Name);
+
 
         return new MicrosoftTransliterationResult(transliteration, text, script);
     }
@@ -320,15 +378,18 @@ public sealed class MicrosoftTranslator : ITranslator, IDisposable
         };
 
         request.Headers.Add("X-MT-Signature", GetSignature(_detectUrl));
-        request.Content = new StringContent($"[{{\"Text\":\"{text.AsSpan().SafeJsonTextEncode()}\"}}]", Encoding.UTF8, "application/json");
+        string encodedText = JsonConvert.ToString(text);
+        var json = $"[{{\"Text\":{encodedText}}}]";
+        request.Content = new StringContent(json, Encoding.UTF8, "application/json");
 
         using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
 
-        using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
-        using var document = await JsonDocument.ParseAsync(stream).ConfigureAwait(false);
+        var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+        var root = JArray.Parse(content)[0];
 
-        string language = document.RootElement[0].GetProperty("language"u8).GetString() ?? throw new TranslatorException("Failed to get the detected language.", Name);
+        string language = root["language"]?.ToString() ?? throw new TranslatorException("Failed to get the detected language.", Name);
+
 
         return Language.GetLanguage(language);
     }
@@ -424,8 +485,8 @@ public sealed class MicrosoftTranslator : ITranslator, IDisposable
             using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
 
-            using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
-            _voices = await JsonSerializer.DeserializeAsync(stream, MicrosoftVoiceContext.Default.MicrosoftVoiceArray).ConfigureAwait(false) ?? throw new TranslatorException("Failed to deserialize voice list.", Name);
+            //using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+            //_voices = await JsonSerializer.DeserializeAsync(stream, MicrosoftVoiceContext.Default.MicrosoftVoiceArray).ConfigureAwait(false) ?? throw new TranslatorException("Failed to deserialize voice list.", Name);
         }
         finally
         {
@@ -476,22 +537,22 @@ public sealed class MicrosoftTranslator : ITranslator, IDisposable
             using var response = await _httpClient.SendAsync(request).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
 
-            using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
-            using var document = await JsonDocument.ParseAsync(stream).ConfigureAwait(false);
-            var root = document.RootElement;
+            var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            var root = JObject.Parse(content);
 
             // Tokens are valid for 30 minutes. The exp. date might be closer
             // if another API request is made while the token is still valid.
 
             // https://docs.microsoft.com/en-us/azure/cognitive-services/authentication?tabs=powershell#authenticate-with-an-authentication-token
-            var tokenProp = root.GetProperty("t"u8);
+            var tokenProp = root["t"];
             if (!TryGetExpirationDate(tokenProp, out var expirationDate))
             {
                 throw new TranslatorException("Unable to obtain the expiration date from the auth token.", Name);
             }
 
-            string token = tokenProp.GetString() ?? throw new TranslatorException("Unable to get the Microsoft Azure Auth token.", Name);
-            string region = root.GetProperty("r"u8).GetString() ?? throw new TranslatorException("Unable to get the Microsoft Azure API region.", Name);
+            string token = tokenProp?.ToString() ?? throw new TranslatorException("Unable to get the Microsoft Azure Auth token.", Name);
+            string region = root["r"]?.ToString() ?? throw new TranslatorException("Unable to get the Microsoft Azure API region.", Name);
+
 
             var authInfo = new MicrosoftAuthTokenInfo(token, region);
 
@@ -641,20 +702,19 @@ public sealed class MicrosoftTranslator : ITranslator, IDisposable
         return $"MSTranslatorAndroidApp::{Convert.ToBase64String(hash)}::{dateTime}::{guid}";
     }
 
-    private static bool TryGetExpirationDate(in JsonElement element, out DateTimeOffset expirationDate)
+    private static bool TryGetExpirationDate(JToken element, out DateTimeOffset expirationDate)
     {
-        string? token = element.GetString();
-        var span = token.AsSpan();
-        int index = span.IndexOf('.');
-        int lastIndex = span.LastIndexOf('.');
+        string? token = element?.ToString();
+        int index = token.IndexOf('.');
+        int lastIndex = token.LastIndexOf('.');
 
         if (index != -1 && index < lastIndex)
         {
-            var encodedPayload = token.AsSpan()[++index..lastIndex];
-            byte[] payload = Base64UrlDecode(encodedPayload.ToString());
+            var encodedPayload = token.Substring(++index, lastIndex - index);
+            byte[] payload = Base64UrlDecode(encodedPayload);
 
-            var document = JsonDocument.Parse(payload);
-            if (document.RootElement.TryGetProperty("exp"u8, out var exp) && exp.TryGetInt64(out long unixSeconds))
+            var document = JObject.Parse(Encoding.UTF8.GetString(payload));
+            if (document.TryGetValue("exp", out JToken exp) && long.TryParse(exp.ToString(), out long unixSeconds))
             {
                 expirationDate = DateTimeOffset.FromUnixTimeSeconds(unixSeconds);
                 return true;
@@ -664,6 +724,7 @@ public sealed class MicrosoftTranslator : ITranslator, IDisposable
         expirationDate = default;
         return false;
     }
+
 
     private static byte[] Base64UrlDecode(string text)
     {

@@ -3,10 +3,11 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
-using System.Text.Json;
+//using System.Text.Json;
 using System.Threading.Tasks;
 using GTranslate.Extensions;
 using GTranslate.Results;
+using Newtonsoft.Json.Linq;
 
 namespace GTranslate.Translators;
 
@@ -115,19 +116,27 @@ public sealed class GoogleTranslator : ITranslator, IDisposable
 
         using var response = await _httpClient.SendAsync(request).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
-        using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
-        using var document = await JsonDocument.ParseAsync(stream).ConfigureAwait(false);
+        //using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+        //var reader = new StreamReader(stream);
+        //var contentstream = await reader.ReadToEndAsync();
+        var stream = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
 
-        var sentences = document.RootElement.GetProperty("sentences"u8);
-        if (sentences.ValueKind != JsonValueKind.Array)
+
+        var document = JObject.Parse(stream);
+
+        var sentences = document["sentences"];
+        if (sentences == null || !sentences.HasValues)
         {
             throw new TranslatorException("Failed to get the translated text.", Name);
         }
 
-        string translation = string.Concat(sentences.EnumerateArray().Select(x => x.GetProperty("trans"u8).GetString()));
-        string transliteration = string.Concat(sentences.EnumerateArray().Select(x => x.GetPropertyOrDefault("translit"u8).GetStringOrDefault()));
-        string source = document.RootElement.GetProperty("src"u8).GetString() ?? string.Empty;
-        float? confidence = document.RootElement.TryGetSingle("confidence"u8, out float temp) ? temp : null;
+        string translation = string.Concat(sentences.Select(x => x["trans"]?.ToString()));
+        string transliteration = string.Concat(sentences.Select(x => x["translit"]?.ToString()));
+        string source = document["src"]?.ToString() ?? string.Empty;
+        float? confidence = document.TryGetValue("confidence", out JToken confidenceToken) && confidenceToken.Type == JTokenType.Float
+            ? (float)confidenceToken
+            : (float?)null;
+
 
         return new GoogleTranslationResult(translation, text, Language.GetLanguage(toLanguage.ISO6391), Language.GetLanguage(source), transliteration, confidence);
     }

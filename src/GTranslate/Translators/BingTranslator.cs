@@ -2,13 +2,15 @@
 using System.Buffers.Text;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Text;
-using System.Text.Json;
+//using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using GTranslate.Extensions;
 using GTranslate.Results;
+using Newtonsoft.Json.Linq;
 
 namespace GTranslate.Translators;
 
@@ -104,31 +106,36 @@ public sealed class BingTranslator : ITranslator, IDisposable
         // For some reason the "isVertical" parameter allows you to translate up to 1000 characters instead of 500
         var uri = new Uri($"{HostUrl}/ttranslatev3?isVertical=1&IG={credentials.ImpressionGuid.ToString("N").ToUpperInvariant()}&IID={Iid}");
         using var response = await _httpClient.PostAsync(uri, content).ConfigureAwait(false);
+        //using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+        //var reader = new StreamReader(stream);
+        //var contentstream = await reader.ReadToEndAsync();
+        var stream = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
-        using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+
 
         // Bing Translator always return status code 200 regardless of the content
-        using var document = await JsonDocument.ParseAsync(stream).ConfigureAwait(false);
-        var root = document.RootElement;
+        var rootArray = JArray.Parse(stream);
+        var first = rootArray[0];
 
-        TranslatorGuards.ThrowIfStatusCodeIsPresent(root);
+        TranslatorGuards.ThrowIfStatusCodeIsPresent(first as JObject);
 
-        var first = root.FirstOrDefault();
-        var translation = first.GetPropertyOrDefault("translations"u8).FirstOrDefault();
+        //var first = root.Children().FirstOrDefault();
+        var translation = first?["translations"]?.FirstOrDefault();
 
-        if (first.ValueKind == JsonValueKind.Undefined || translation.ValueKind == JsonValueKind.Undefined)
+        if (first == null || translation == null)
         {
             throw new TranslatorException("The API returned an empty response.", Name);
         }
 
-        var langDetection = first.GetProperty("detectedLanguage"u8);
-        string detectedLanguage = langDetection.GetProperty("language"u8).GetString() ?? string.Empty;
-        float score = langDetection.GetProperty("score"u8).GetSingle();
-        string translatedText = translation.GetProperty("text"u8).GetString() ?? throw new TranslatorException("Failed to get the translated text.", Name);
-        string targetLanguage = translation.GetProperty("to"u8).GetString() ?? toLanguage.ISO6391;
-        string? script = translation.GetPropertyOrDefault("transliteration"u8).GetPropertyOrDefault("script"u8).GetStringOrDefault();
-        string? transliteration = translation.GetPropertyOrDefault("transliteration"u8).GetPropertyOrDefault("text"u8).GetStringOrDefault()
-                                  ?? root.ElementAtOrDefault(1).GetPropertyOrDefault("inputTransliteration"u8).GetStringOrDefault();
+        var langDetection = first["detectedLanguage"];
+        string detectedLanguage = langDetection?["language"]?.ToString() ?? string.Empty;
+        float score = langDetection?["score"]?.ToObject<float>() ?? 0;
+        string translatedText = translation["text"]?.ToString() ?? throw new TranslatorException("Failed to get the translated text.", Name);
+        string targetLanguage = translation["to"]?.ToString() ?? toLanguage.ISO6391;
+        string? script = translation["transliteration"]?["script"]?.ToString();
+        string? transliteration = translation["transliteration"]?["text"]?.ToString()
+                                  ?? rootArray.Children().ElementAtOrDefault(1)?["inputTransliteration"]?.ToString();
+
 
         return new BingTranslationResult(translatedText, text, Language.GetLanguage(targetLanguage), Language.GetLanguage(detectedLanguage), transliteration, script, score);
     }
